@@ -84,7 +84,6 @@ int main(int argc, char *argv[])
         }
         
         printf("Accepted connection from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-        //printf("%s\n");
         handle_request(&app, client_socket);
         close(client_socket);
     }
@@ -142,10 +141,7 @@ void handle_request(struct server_app *app, int client_socket) {
     // copy buffer to a new string
     char *request = malloc(strlen(buffer) + 1);
     strcpy(request, buffer);
-    //printf("@@@@@@@@%s", request);
 
-    // TODO: Parse the header and extract essential fields, e.g. file name
-    // Hint: if the requested path is "/" (root), default to index.html
     char* first_line = strtok(request, "\r\n");
     char* command_type = strtok(first_line, " ");
     char * file_name = strtok(NULL, " ");
@@ -157,7 +153,8 @@ void handle_request(struct server_app *app, int client_socket) {
     if (!strcmp(file_name, "/") && strlen(file_name) == 1) {
         file_name = "index.html";
     }
-    //printf("%s\n", file_name);
+    printf("%s", file_name);
+    printf("\n");
 
     // TODO: Implement proxy and call the function under condition
     // specified in the spec
@@ -180,98 +177,13 @@ void serve_local_file(int client_socket, const char *path) {
     // (When the requested file does not exist):
     // * Generate a correct response
 
-    //char response[] = "HTTP/1.0 200 OK\r\n"
-    //                  "Content-Type: text/plain; charset=UTF-8\r\n"
-    //                  "Content-Length: 16\r\n"
-    //                  "\r\n"
-    //                  "Samplie response";
-    
-    char* ext;
-    if (strchr(path, '.') != NULL)
-        ext = strrchr(path, '.');
-    else
-        ext = "binary";
-    
-    //printf("%s\n", ext);
-    
-    char* content;
-    
-    if (strcmp(ext, ".html") == 0)
-        content = "text/html";
-    else if (strcmp(ext, ".txt") == 0)
-        content = "text/plain";
-    else if (strcmp(ext, ".jpg") == 0)
-        content = "image/jpeg";
-    //else if (strcmp(ext, ".m3u8") == 0)
-    //    content = "application/vnd.apple.mpegurl";
-    else if (strcmp(ext, "binary") == 0)
-        content = "application/octet-stream";
-    
-    //fprintf(stderr, "%s", content);
-    
-    path = strtok((char*)path, "/");
-    //printf("%s\n", path);
-    
-    char path_parsed[strlen(path) + 1];
-    char *sp = (char*)path;
-    char *dp = path_parsed;
+    char response[] = "HTTP/1.0 200 OK\r\n"
+                      "Content-Type: text/plain; charset=UTF-8\r\n"
+                      "Content-Length: 15\r\n"
+                      "\r\n"
+                      "Sample response";
 
-    while (*sp) {
-        if (sp[0] == '%' && sp[1] == '2' && sp[2] == '0') {
-            *dp = ' ';
-            sp += 3;
-        }
-        else if (sp[0] == '%' && sp[1] == '2' && sp[2] == '5') {
-            *dp = '%';
-            sp += 3;
-        }
-        else {
-            *dp = *sp;
-            sp++;
-        }
-        dp++;
-    }
-    *dp = '\0';
-    
-    FILE *file = fopen(path_parsed, "r");
-    
-    if (file == NULL)
-        return;
-    
-    fseek(file, 0, SEEK_END);
-    int file_size = ftell(file);
-    rewind(file);
-    
-    //printf("%d\n", file_size);
-    
-    char *response = (char *)malloc(file_size + 8192);
-
-    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", content, file_size);
-    
-    //printf("%s", response);
-    
-    //sprintf(response, "HTTP/1.1 200 OK\r\n");
-    //strcat(response, "Content-Type: ");
-    //strcat(response, content);
-    //strcat(response, "\r\n\r\n");
-    ////strcat(response, "Content-Length: ");
-    ////strcat(response, file_size);
-
-    //while (fgets(line, sizeof(line), file)) {
-    //    strcat(response, line);
-    //}
-    
     send(client_socket, response, strlen(response), 0);
-    
-    char buffer[BUFFER_SIZE];
-    size_t bytes_read;
-    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-        send(client_socket, buffer, bytes_read, 0);
-    }
-    
-    fclose(file);
-    
-    free(response);
 }
 
 void proxy_remote_file(struct server_app *app, int client_socket, const char *request) {
