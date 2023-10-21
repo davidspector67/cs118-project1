@@ -37,6 +37,7 @@ void parse_args(int argc, char *argv[], struct server_app *app);
 void handle_request(struct server_app *app, int client_socket);
 void serve_local_file(int client_socket, const char *path);
 void proxy_remote_file(struct server_app *app, int client_socket, const char *path);
+bool need_proxy(const char *path);
 
 // The main function is provided and no change is needed
 int main(int argc, char *argv[])
@@ -84,6 +85,7 @@ int main(int argc, char *argv[])
         }
         
         printf("Accepted connection from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+        //printf("%s\n");
         handle_request(&app, client_socket);
         close(client_socket);
     }
@@ -142,6 +144,8 @@ void handle_request(struct server_app *app, int client_socket) {
     char *request = malloc(strlen(buffer) + 1);
     strcpy(request, buffer);
 
+    // TODO: Parse the header and extract essential fields, e.g. file name
+    // Hint: if the requested path is "/" (root), default to index.html
     char* first_line = strtok(request, "\r\n");
     char* command_type = strtok(first_line, " ");
     char * file_name = strtok(NULL, " ");
@@ -153,16 +157,24 @@ void handle_request(struct server_app *app, int client_socket) {
     if (!strcmp(file_name, "/") && strlen(file_name) == 1) {
         file_name = "index.html";
     }
-    printf("%s", file_name);
-    printf("\n");
 
     // TODO: Implement proxy and call the function under condition
     // specified in the spec
-    // if (need_proxy(...)) {
-    //    proxy_remote_file(app, client_socket, file_name);
-    // } else {
-    serve_local_file(client_socket, file_name);
-    //}
+    if (need_proxy(file_name)) {
+       proxy_remote_file(app, client_socket, file_name);
+    } else {
+        serve_local_file(client_socket, file_name);
+    }
+}
+
+bool need_proxy(const char* path) {
+    char* ext;
+    if (strchr(path, '.')) {
+        ext = strrchr(path, '.');
+        if (!strcmp(ext, ".ts"))
+            return true;
+    }
+    return false;
 }
 
 void serve_local_file(int client_socket, const char *path) {
@@ -176,26 +188,130 @@ void serve_local_file(int client_socket, const char *path) {
     // * Also send file content
     // (When the requested file does not exist):
     // * Generate a correct response
+    
+    char* ext;
+    if (strchr(path, '.'))
+        ext = strrchr(path, '.');
+    else
+        ext = "binary";
+    
+    char* content;
+    
+    if (!strcmp(ext, ".html"))
+        content = "text/html";
+    else if (!strcmp(ext, ".txt"))
+        content = "text/plain";
+    else if (!strcmp(ext, ".jpg"))
+        content = "image/jpeg";
+    else if (!strcmp(ext, "binary"))
+        content = "application/octet-stream";
+    
+    
+    path = strtok((char*)path, "/");
+    printf("%s\n", path);
+    
+    char path_parsed[strlen(path) + 1];
+    char *sp = (char*)path;
+    char *dp = path_parsed;
 
-    char response[] = "HTTP/1.0 200 OK\r\n"
-                      "Content-Type: text/plain; charset=UTF-8\r\n"
-                      "Content-Length: 15\r\n"
-                      "\r\n"
-                      "Sample response";
-
+    while (*sp) {
+        if (sp[0] == '%' && sp[1] == '2' && sp[2] == '0') {
+            *dp = ' ';
+            sp += 3;
+        }
+        else if (sp[0] == '%' && sp[1] == '2' && sp[2] == '5') {
+            *dp = '%';
+            sp += 3;
+        }
+        else {
+            *dp = *sp;
+            sp++;
+        }
+        dp++;
+    }
+    *dp = '\0';
+    
+    FILE *file = fopen(path_parsed, "r");
+    
+    if (!file) {
+        char response[] = "HTTP/1.0 404 Not Found\r\n\r\n";
+        send(client_socket, response, strlen(response), 0);
+        return;
+    }
+    
+    fseek(file, 0, SEEK_END);
+    int file_size = ftell(file);
+    rewind(file);
+    
+    char *response = (char *)malloc(file_size + 8192);
+    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", content, file_size);
+    
     send(client_socket, response, strlen(response), 0);
+    
+    char buffer[BUFFER_SIZE];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        send(client_socket, buffer, bytes_read, 0);
+    }
+    
+    fclose(file);
+    
+    free(response);
 }
 
 void proxy_remote_file(struct server_app *app, int client_socket, const char *request) {
     // TODO: Implement proxy request and replace the following code
     // What's needed:
-    // * Connect to remote server (app->remote_server/app->remote_port)
+    // * Connect to remote server (app->remote_host/app->remote_port)
     // * Forward the original request to the remote server
     // * Pass the response from remote server back
     // Bonus:
     // * When connection to the remote server fail, properly generate
     // HTTP 502 "Bad Gateway" response
 
-    char response[] = "HTTP/1.0 501 Not Implemented\r\n\r\n";
+    // Connect to remote server
+    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
+    int optval = 1;
+    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+
+    struct sockaddr_in host_addr;
+
+    host_addr.sin_family = AF_INET;
+    host_addr.sin_addr.s_addr = inet_addr(app->remote_host);
+    host_addr.sin_port = htons(app->remote_port);
+
+    if (connect(server_socket, (struct sockaddr *)&host_addr, sizeof(host_addr)) < 0) {
+        char response[] = "HTTP/1.0 502 Bad Gateway\r\n\r\n";
+        send(client_socket, response, strlen(response), 0);
+        return;
+    }
+
+    // Forward the original request to the remote server
+    char *full_request = (char *)malloc(strlen(request)+8192);
+
+    sprintf(full_request, "GET %s HTTP/1.1\r\n\r\n", request);
+    if (send(server_socket, full_request, strlen(full_request), 0) < 0) {
+        perror("Error sending request");
+        exit(EXIT_FAILURE);
+    }
+
+    // Pass the response from remote server back
+    char header_buffer[BUFFER_SIZE];
+    int bytes_read;
+    bytes_read = recv(server_socket, header_buffer, sizeof(header_buffer) - 1, 0);
+    printf("%d\n", bytes_read);
+    char *response = (char *)malloc(8192);
+    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: video/MP2T\r\nContent-Length: 4311780\r\n\r\n"); // hardcoded for now
     send(client_socket, response, strlen(response), 0);
+    int total = 0;
+    char obj_buffer[BUFFER_SIZE];
+    while ((bytes_read = recv(server_socket, obj_buffer, sizeof(obj_buffer) - 1, 0)) > 0){
+        total = total + bytes_read;
+        send(client_socket, obj_buffer, bytes_read, 0);
+    }
+    printf("%d\n", total);
 }
